@@ -25,6 +25,7 @@ def anonymise(avp):
             listAVP[:] = [str((int(x)+5)%10) if(x.isdigit()) else x for x in listAVP]
             avp = "".join(listAVP)
     avp = re.sub(r"mnc...", "mnc123", avp)
+    avp = re.sub(r"232F402", "232F492", avp)
     return(avp)
 
 def writeRecordsToFile(filePath, capturedRecord):
