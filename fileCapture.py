@@ -25,7 +25,6 @@ def anonymise(avp):
             listAVP[:] = [str((int(x)+5)%10) if(x.isdigit()) else x for x in listAVP]
             avp = "".join(listAVP)
     avp = re.sub(r"mnc...", "mnc123", avp)
-    avp = re.sub(r"232F402", "232F492", avp)
     return(avp)
 
 def writeRecordsToFile(filePath, capturedRecord):
@@ -42,12 +41,18 @@ def writeRecordsToFile(filePath, capturedRecord):
     logging.debug("Closing file")
     outFile.close()
 
-def searchGzFile(filePath, searchPattern):
-    logging.debug("searching file for pattern " + searchPattern + " in file " + filePath)
+def searchGzFile(filePath, searchPatterns):
+    logging.debug("searching file for patterns in file " + filePath)
 
-    matchInRecordFlag = False;
+    matchInRecordCount = 0;
+    numPatterns = 0
     matchingRecords = []
     capturedRecord = []
+
+    for patterns in searchPatterns: # count patterns - must all match
+        for pattern in patterns:
+            numPatterns = numPatterns+1
+    logging.debug("Number of patterns that must match " + str(numPatterns))
 
     inFile=gzip.open(filePath,'rt')
 
@@ -55,23 +60,23 @@ def searchGzFile(filePath, searchPattern):
         for line in inFile:
             capturedRecord.append(line)
             if(re.search("^RECORD", line)):
-                logging.debug("Found a RECORD start - matchInRecordFlag is " + str(matchInRecordFlag))
-                if(matchInRecordFlag):
+                if(matchInRecordCount == numPatterns):
                     capturedRecord.pop(-1) # Remove RECORD from end
                     matchingRecords.extend(capturedRecord)
-                    logging.debug("Record written setting matchInRecordFlag to False")
+                    logging.debug("Record written setting matchInRecordCount to zero")
                 capturedRecord=[]
                 capturedRecord.append(line) # Ensure next record begins with RECORD
-                matchInRecordFlag = False
+                matchInRecordCount = 0
 
-            if(re.search(searchPattern, line)):
-                logging.debug("Found match in file " + filePath + " setting matchInRecordFlag to True")
-                matchInRecordFlag = True;
+            for patterns in searchPatterns: # Stores as array of arrays
+                for pattern in patterns:
+                    if(re.search(pattern, line)):
+                        matchInRecordCount = matchInRecordCount+1
     except StopIteration:
         logging.debug("Should never reach here!")
     else:
         logging.debug("Checking end of file for matching record")
-        if(matchInRecordFlag):
+        if(matchInRecordCount):
             matchingRecords.extend(capturedRecord)
             logging.debug("End of file and last record matches")
 
@@ -81,6 +86,7 @@ def searchGzFile(filePath, searchPattern):
 
 def getNewFiles(dirPath, lastFileMtime):
     allFiles = os.listdir(dirPath);
+    allFiles.sort(key=os.path.getmtime)
     fileMtime = dict();
     for file in allFiles:
         try:
@@ -116,10 +122,20 @@ def waitForDirUpdate(dirPath, dirMtime):
         time.sleep(0.1)
     return(newDirMtime)
 
+def processInputFiles(filenames, searchPatterns):
+    for filename in filenames:
+        if (filename.endswith(".gz")):
+            print("Processing " + filename)
+            searchGzFile(filename, searchPatterns)
+        else:
+            logging.debug("Skipping file" + filename)
+
 parser = argparse.ArgumentParser(description='Capture and anonymise records from backup storage in gzipped Comptel export format.')
-parser.add_argument('--debug', action='store_true', default=False, required=False, help='Enable debug logging')
+parser.add_argument('--debug', action='store_true', default=False, required=False, help='Enable debug logging.')
+parser.add_argument('--oldfiles', action='store_true', default=False, required=False, help='By default, only read files created after command is started, but read all files if this flag is set.')
+parser.add_argument('--firstTstamp', nargs=1, type=int, default=0, required=False, help='Timstamp in Epoch format - e.g. 1653927441718')
 parser.add_argument(dest='path', help='Directory where files are collected')
-parser.add_argument(dest='searchPattern', help='Records with a matching value for this searchPattern will be extracted')
+parser.add_argument(dest='searchPatterns', action='append', nargs='+', help='One or more patterns which must all match to trigger the extraction of the record')
 args = parser.parse_args()
 
 if (args.debug):
@@ -132,19 +148,21 @@ if(os.path.isdir(args.path) is False):
 
 path = str(args.path) + '/' ;
 os.chdir(path)
-searchPattern=args.searchPattern
 
-dirMtime = time.time()
-lastFileMtime = dirMtime
-while(True):
-    dirMtime = waitForDirUpdate(path, dirMtime)
-    newFiles,lastFileMtime = getNewFiles(path, lastFileMtime)
+logging.debug("Search patterns are:" + str(args.searchPatterns))
 
-    logging.debug ("New files")
-    logging.debug (newFiles)
-    logging.debug ("New mtime: " + str(lastFileMtime))
-    for filename in newFiles:
-        if (filename.endswith(".gz")):
-            searchGzFile(filename, searchPattern)
-        else:
-            logging.debug("skipping file" + file)
+try:
+    dirMtime = time.time()
+    lastFileMtime = dirMtime
+    if(args.oldfiles):
+        newFiles,lastFileMtime = getNewFiles(path, args.firstTstamp)
+        processInputFiles(newFiles, args.searchPatterns)
+
+    print("Waiting for new files, <ctrl>c to exit")
+    while(True):
+        newFiles,lastFileMtime = getNewFiles(path, lastFileMtime)
+        processInputFiles(newFiles, args.searchPatterns)
+
+        logging.debug ("New mtime: " + str(lastFileMtime))
+except (KeyboardInterrupt, SystemExit):
+    print("Exiting...")
